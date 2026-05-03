@@ -161,6 +161,7 @@ let state = {
   sessionStart: null,
 };
 let timerInterval = null;
+let sessionInterval = null;
 
 // Storage
 function loadData() {
@@ -284,7 +285,7 @@ async function saveSession() {
     recovery:null};
   saveData(nd);
   state.data=nd; state.recovery=null; state.session={}; state.exRpe={}; state.notes=''; state.bwIn='';
-  state.sessionDate=todayStr(); state.sessionStart=null; state.saved=true;
+  state.sessionDate=todayStr(); state.sessionStart=null; clearInterval(sessionInterval); sessionInterval=null; state.saved=true;
   render();
   setTimeout(()=>{state.saved=false;render();},2500);
   if(Object.keys(nd.logs).length>=3) fetchAI(nd);
@@ -432,13 +433,15 @@ function buildToday(content, day, total, prs) {
   // Start Session button / elapsed timer
   if(!state.sessionStart){
     content.appendChild(h('button',{className:'btn',style:{width:'100%',padding:'11px',background:'#059669',border:'none',color:'#fff',fontSize:'13px',fontWeight:'600',borderRadius:'10px',marginBottom:'10px'},
-      onClick:()=>{state.sessionStart=Date.now();render();}},'▶ Start Session'));
+      onClick:()=>{state.sessionStart=Date.now();sessionInterval=setInterval(()=>{const el=document.getElementById('session-elapsed');if(el){const e=Math.floor((Date.now()-state.sessionStart)/60000);const s=Math.floor(((Date.now()-state.sessionStart)%60000)/1000);el.textContent=e+'m '+s+'s';}},1000);render();}},'▶ Start Session'));
   } else {
     const elapsed=Math.floor((Date.now()-state.sessionStart)/60000);
     const elapsedSecs=Math.floor(((Date.now()-state.sessionStart)%60000)/1000);
     const elRow=el('div',{background:'#f0fdf4',border:'1px solid rgba(5,150,105,0.3)',borderRadius:'10px',padding:'9px 14px',marginBottom:'10px',display:'flex',justifyContent:'space-between',alignItems:'center'});
     elRow.appendChild(el('div',{fontSize:'11px',fontWeight:'600',color:'#059669'},'Session in progress'));
-    elRow.appendChild(el('div',{fontSize:'15px',fontWeight:'700',color:'#059669'},elapsed+'m '+elapsedSecs+'s'));
+    const elapsedEl=el('div',{fontSize:'15px',fontWeight:'700',color:'#059669'},elapsed+'m '+elapsedSecs+'s');
+    elapsedEl.id='session-elapsed';
+    elRow.appendChild(elapsedEl);
     content.appendChild(elRow);
   }
 
