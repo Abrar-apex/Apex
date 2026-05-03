@@ -131,6 +131,7 @@ let state = {
   finisherEdit: {},
   dayIdx: 0,
   session: {},
+  exRpe: {},
   rpe: 7,
   notes: '',
   bwIn: '',
@@ -270,7 +271,8 @@ async function saveSession() {
     exercises:day.exercises.map(ex=>({
       id:ex.id, name:ex.name,
       sets:(state.session[ex.id]||{sets:[]}).sets||[],
-      done:(state.session[ex.id]||{}).done||false
+      done:(state.session[ex.id]||{}).done||false,
+      rpe:state.exRpe[ex.id]||null
     })),
     wasRecovery:!!state.recovery
   };
@@ -279,7 +281,7 @@ async function saveSession() {
     bw:state.bwIn?[...state.data.bw,{date:state.sessionDate,v:parseFloat(state.bwIn)}]:state.data.bw,
     recovery:null};
   saveData(nd);
-  state.data=nd; state.recovery=null; state.session={}; state.notes=''; state.bwIn='';
+  state.data=nd; state.recovery=null; state.session={}; state.exRpe={}; state.notes=''; state.bwIn='';
   state.sessionDate=todayStr(); state.saved=true;
   render();
   setTimeout(()=>{state.saved=false;render();},2500);
@@ -507,6 +509,12 @@ function buildExCard(ex, prs) {
   const pr=prs[ex.id];
   const isPR=!bw&&pr&&curW>=pr.w;
   const wu=!bw&&curW>=20?warmupSets(curW):[];
+  // Check if ready to progress: last session all sets done at exRpe <= 6
+  const lastLog=Object.values(state.data.logs).filter(l=>l.dayId===DAYS[state.dayIdx].id).sort((a,b)=>b.date.localeCompare(a.date))[0]||null;
+  const lastEx=lastLog?.exercises?.find(e=>e.id===ex.id)||null;
+  const lastExRpe=lastEx?.rpe||null;
+  const lastAllDone=lastEx&&lastEx.done&&lastEx.sets&&lastEx.sets.length>0&&lastEx.sets.every(s=>s.reps);
+  const readyToProgress=!bw&&!isRecov&&lastAllDone&&lastExRpe!==null&&lastExRpe<=6;
 
   const card=el('div',{background:done?'#f0fdf4':'#fff',border:'1px solid '+(done?'rgba(5,150,105,0.4)':'#e4e8ef'),borderRadius:'10px',marginBottom:'6px'});
   const header=el('div',{cursor:'pointer',padding:'10px 12px',display:'flex',alignItems:'center',gap:'9px'});
@@ -542,7 +550,13 @@ function buildExCard(ex, prs) {
   header.appendChild(info);
 
   const right=el('div',{textAlign:'right',flexShrink:'0'});
-  right.appendChild(el('div',{fontSize:'13px',fontWeight:'700',color:bw?'#94a3b8':isRecov?'#d97706':'#0f172a'},bw?ulb(ex.u).toUpperCase():(curW+' '+ulb(ex.u))));
+  const weightLine=el('div',{fontSize:'13px',fontWeight:'700',color:bw?'#94a3b8':isRecov?'#d97706':'#0f172a',display:'flex',alignItems:'center',gap:'5px',justifyContent:'flex-end'});
+  weightLine.appendChild(document.createTextNode(bw?ulb(ex.u).toUpperCase():(curW+' '+ulb(ex.u))));
+  if(readyToProgress){
+    const badge=el('span',{fontSize:'9px',background:'#f0fdf4',color:'#059669',border:'1px solid rgba(5,150,105,0.3)',padding:'1px 5px',borderRadius:'4px',fontWeight:'700'},'+5 →');
+    weightLine.appendChild(badge);
+  }
+  right.appendChild(weightLine);
   if(isRecov) right.appendChild(el('div',{fontSize:'9px',color:'#d97706',fontWeight:'600'},'ADJUSTED'));
   right.appendChild(el('div',{fontSize:'10px',color:'#94a3b8',marginTop:'1px'},open?'▲':'▼'));
   header.appendChild(right);
@@ -612,6 +626,19 @@ function buildExCard(ex, prs) {
       row.appendChild(ri);
       body.appendChild(row);
     }
+    // Per-exercise RPE
+    const exRpeWrap=el('div',{marginTop:'10px',paddingTop:'10px',borderTop:'1px solid #e4e8ef'});
+    exRpeWrap.appendChild(el('div',{fontSize:'10px',fontWeight:'600',color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'6px'},'Exercise RPE'));
+    const exRpeBtns=el('div',{display:'flex',gap:'4px',flexWrap:'wrap'});
+    const curExRpe=state.exRpe[ex.id]||null;
+    [1,2,3,4,5,6,7,8,9,10].forEach(r=>{
+      const btn=h('button',{className:'rpe-btn'+(curExRpe===r?' active':''),
+        style:{background:curExRpe===r?rpeColor(r):'#f8f9fb',borderColor:curExRpe===r?rpeColor(r):'#e4e8ef',color:curExRpe===r?'#fff':'#475569'},
+        onClick:()=>{state.exRpe[ex.id]=r;render();}},String(r));
+      exRpeBtns.appendChild(btn);
+    });
+    exRpeWrap.appendChild(exRpeBtns);
+    body.appendChild(exRpeWrap);
     card.appendChild(body);
   }
   return card;
