@@ -109,6 +109,31 @@ const ALL_EX = DAYS.flatMap(d => d.exercises);
 const isbw = u => u==='bw'||u==='max';
 const ulb = u => ({lb:'lb',bw:'BW',sec:'sec',max:'max',assist:'lb assist'}[u]||u);
 const getSuperset = (day, exId) => (day.supersets||[]).find(s => s.exIds.includes(exId)) || null;
+const setDisp = (s, u) => {
+  const w=s.weight, r=s.reps;
+  const hasW=w!==undefined&&w!==''&&w!==null&&parseFloat(w)>0;
+  const hasR=r!==undefined&&r!==''&&r!==null;
+  if(u==='sec'){
+    if(hasW&&hasR) return w+'lb·'+r+'sec';
+    if(hasR) return r+'sec';
+    if(hasW) return w+'lb';
+    return '';
+  }
+  if(u==='bw'||u==='max'){
+    if(hasW&&hasR) return w+'lb+'+r;
+    if(hasR) return r;
+    return '';
+  }
+  if(u==='assist'){
+    if(hasW&&hasR) return w+'lb asst×'+r;
+    if(hasR) return r;
+    return '';
+  }
+  if(hasW&&hasR) return w+'lb×'+r;
+  if(hasW) return w+'lb';
+  if(hasR) return r;
+  return '';
+};
 const todayStr = () => new Date().toISOString().slice(0,10);
 const fmtDate = k => { const [y,m,d]=k.split('-'); return m+'/'+d+'/'+y.slice(2); };
 const rpeColor = r => r<=4?'#059669':r<=6?'#d97706':r<=8?'#2563eb':'#dc2626';
@@ -147,6 +172,8 @@ let state = {
   planIdx: 0,
   planSub: 'plan',
   histIdx: 0,
+  histView: 'session',
+  histExpandedEx: null,
   openStat: null,
   recovery: null,
   timerSecs: null,
@@ -988,46 +1015,206 @@ function buildGoals(content, total) {
 }
 
 function buildHistory(content) {
+  const allLogs=Object.values(state.data.logs).filter(l=>l.exercises);
+
   content.appendChild(el('div',{fontSize:'18px',fontWeight:'700',color:'#0f172a',marginBottom:'12px'},'Session History'));
+
+  // === Weekly Summary ===
+  const today=new Date();
+  const weekStart=d=>{const x=new Date(d);const dy=x.getDay();const diff=dy===0?-6:1-dy;x.setDate(x.getDate()+diff);x.setHours(0,0,0,0);return x;};
+  const thisWeekStart=weekStart(today);
+  const fourWeeksAgo=new Date(thisWeekStart);fourWeeksAgo.setDate(fourWeeksAgo.getDate()-21);
+
+  const thisWeekLogs=allLogs.filter(l=>new Date(l.date)>=thisWeekStart);
+  const fourWeekLogs=allLogs.filter(l=>new Date(l.date)>=fourWeeksAgo);
+  const avgRpe=fourWeekLogs.length?(fourWeekLogs.reduce((a,l)=>a+(l.rpe||0),0)/fourWeekLogs.length).toFixed(1):'—';
+
+  let tonnage=0;
+  fourWeekLogs.forEach(l=>{(l.exercises||[]).forEach(ex=>{(ex.sets||[]).forEach(s=>{const w=parseFloat(s.weight),r=parseInt(s.reps);if(!isNaN(w)&&!isNaN(r)&&w>0)tonnage+=w*r;});});});
+
+  const weekKey=d=>weekStart(d).toISOString().slice(0,10);
+  const weeksTrained=new Set(allLogs.map(l=>weekKey(l.date)));
+  let streak=0,cursor=new Date(thisWeekStart);
+  while(weeksTrained.has(weekKey(cursor))){streak++;cursor.setDate(cursor.getDate()-7);}
+
+  const stats=el('div',{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'7px',marginBottom:'12px'});
+  const statCard=(label,value,color)=>{const c=el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',padding:'10px 12px'});c.appendChild(el('div',{fontSize:'9px',fontWeight:'700',color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'3px'},label));c.appendChild(el('div',{fontSize:'17px',fontWeight:'700',color:color||'#0f172a'},value));return c;};
+  stats.appendChild(statCard('This Week',thisWeekLogs.length+' / 4'));
+  stats.appendChild(statCard('Avg RPE (4w)',avgRpe,avgRpe!=='—'?rpeColor(parseFloat(avgRpe)):'#0f172a'));
+  stats.appendChild(statCard('Tonnage (4w)',tonnage>0?tonnage.toLocaleString()+' lb':'—'));
+  stats.appendChild(statCard('Streak',streak+(streak===1?' wk':' wks'),streak>=4?'#059669':streak>=2?'#2563eb':'#0f172a'));
+  content.appendChild(stats);
+
+  // === Calendar Heatmap (last 4 weeks) ===
+  const heatWrap=el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',padding:'10px 12px',marginBottom:'12px'});
+  heatWrap.appendChild(el('div',{fontSize:'9px',fontWeight:'700',color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'},'Last 4 Weeks'));
+  const dayLabels=['M','T','W','T','F','S','S'];
+  const headRow=el('div',{display:'grid',gridTemplateColumns:'30px repeat(7,1fr)',gap:'4px',marginBottom:'4px'});
+  headRow.appendChild(el('div',{}));
+  dayLabels.forEach(l=>headRow.appendChild(el('div',{fontSize:'9px',color:'#94a3b8',textAlign:'center',fontWeight:'600'},l)));
+  heatWrap.appendChild(headRow);
+
+  const logByDate={};
+  allLogs.forEach(l=>{logByDate[l.date]=l;});
+
+  for(let w=3;w>=0;w--){
+    const row=el('div',{display:'grid',gridTemplateColumns:'30px repeat(7,1fr)',gap:'4px',marginBottom:'4px'});
+    const wkLabel=w===0?'Now':'−'+w+'w';
+    row.appendChild(el('div',{fontSize:'9px',color:'#94a3b8',textAlign:'right',paddingRight:'4px',alignSelf:'center',fontWeight:'600'},wkLabel));
+    for(let d=0;d<7;d++){
+      const cellDate=new Date(thisWeekStart);
+      cellDate.setDate(cellDate.getDate()-(w*7)+d);
+      const isFuture=cellDate>today;
+      const dateKey=cellDate.toISOString().slice(0,10);
+      const log=logByDate[dateKey];
+      const dayObj=log?DAYS.find(x=>x.id===log.dayId):null;
+      const cell=el('div',{height:'28px',borderRadius:'4px',background:dayObj?dayObj.color:(isFuture?'#f8f9fb':'#eef2f7'),border:'1px solid '+(dayObj?dayObj.color:'#e4e8ef'),opacity:isFuture?'0.4':'1',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'9px',fontWeight:'700',color:dayObj?'#fff':'#cbd5e1'});
+      if(dayObj)cell.appendChild(document.createTextNode(dayObj.label.replace('DAY ','D')));
+      row.appendChild(cell);
+    }
+    heatWrap.appendChild(row);
+  }
+  content.appendChild(heatWrap);
+
+  // === View toggle ===
+  const toggle=el('div',{display:'flex',gap:'4px',marginBottom:'10px',padding:'3px',background:'#f8f9fb',border:'1px solid #e4e8ef',borderRadius:'8px'});
+  [['session','By Session'],['exercise','By Exercise']].forEach(([k,l])=>{
+    toggle.appendChild(h('button',{onClick:()=>{state.histView=k;state.histExpandedEx=null;render();},style:{flex:'1',padding:'7px',border:'none',background:state.histView===k?'#fff':'transparent',boxShadow:state.histView===k?'0 1px 2px rgba(0,0,0,0.05)':'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',color:state.histView===k?'#0f172a':'#94a3b8',cursor:'pointer',fontFamily:'inherit'}},l));
+  });
+  content.appendChild(toggle);
+
+  // === Day filter pills ===
   const tabs=el('div',{display:'flex',gap:'6px',marginBottom:'12px',flexWrap:'wrap'});
   DAYS.forEach((d,i)=>{
-    tabs.appendChild(h('button',{className:'day-pill'+(state.histIdx===i?' active':''),style:{'--day-color':d.color,'--day-color-light':d.color+'12'},onClick:()=>{state.histIdx=i;render();}},d.label));
+    tabs.appendChild(h('button',{className:'day-pill'+(state.histIdx===i?' active':''),style:{'--day-color':d.color,'--day-color-light':d.color+'12',flex:'1'},onClick:()=>{state.histIdx=i;state.histExpandedEx=null;render();}},d.label));
   });
   content.appendChild(tabs);
+
   const hd=DAYS[state.histIdx];
-  const logs=Object.values(state.data.logs).filter(l=>l.dayId===hd.id).sort((a,b)=>b.date.localeCompare(a.date));
-  if(!logs.length){content.appendChild(el('div',{fontSize:'12px',color:'#94a3b8',paddingTop:'8px'},'No sessions for '+hd.label+' yet.'));return;}
-  logs.forEach(log=>{
-    const card=el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',marginBottom:'9px',overflow:'hidden'});
-    const hdr=el('div',{padding:'9px 12px',borderBottom:'1px solid #e4e8ef',display:'flex',justifyContent:'space-between',alignItems:'center',background:hd.color+'08'});
-    const left=el('div',{});
-    const dateRow=el('div',{fontSize:'13px',fontWeight:'600',color:'#0f172a',display:'flex',gap:'7px',alignItems:'center'});
-    dateRow.appendChild(document.createTextNode(fmtDate(log.date)));
-    if(log.wasRecovery){const badge=el('span',{fontSize:'9px',fontWeight:'600',color:'#d97706',background:'#fffbeb',padding:'1px 6px',borderRadius:'8px'},'RECOVERY');dateRow.appendChild(badge);}
-    left.appendChild(dateRow);
-    left.appendChild(el('div',{fontSize:'10px',color:'#94a3b8',marginTop:'1px'},log.dayLabel+' · '+log.dayTitle));
-    hdr.appendChild(left);
-    const right=el('div',{textAlign:'right'});
-    right.appendChild(el('div',{fontSize:'12px',fontWeight:'700',color:rpeColor(log.rpe)},'RPE '+log.rpe));
-    right.appendChild(el('div',{fontSize:'10px',color:'#94a3b8'},(log.exercises?.filter(e=>e.done).length||0)+'/'+(log.exercises?.length||0)+' done'));
-    if(log.durationMins) right.appendChild(el('div',{fontSize:'10px',color:'#94a3b8'},log.durationMins+' min'));
-    hdr.appendChild(right);
-    card.appendChild(hdr);
-    const body=el('div',{padding:'7px 12px'});
-    (log.exercises||[]).forEach(ex=>{
-      const sets=(ex.sets||[]).filter(s=>s.reps||s.weight);
-      const row=el('div',{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #e4e8ef',alignItems:'flex-start'});
-      row.appendChild(el('div',{fontSize:'11px',color:ex.done?'#059669':'#94a3b8'},ex.name));
-      const rside=el('div',{fontSize:'11px',color:'#475569',textAlign:'right',maxWidth:'55%'});
-      if(sets.length) sets.forEach(s=>{const sp=el('span',{marginLeft:'5px'},(s.weight?s.weight+'lb':'')+(s.weight&&s.reps?'×':'')+(s.reps||''));rside.appendChild(sp);});
-      else rside.appendChild(el('span',{color:'#94a3b8'},'—'));
-      row.appendChild(rside);
-      body.appendChild(row);
+  const logs=allLogs.filter(l=>l.dayId===hd.id).sort((a,b)=>b.date.localeCompare(a.date));
+
+  if(state.histView==='session'){
+    if(!logs.length){content.appendChild(el('div',{fontSize:'12px',color:'#94a3b8',paddingTop:'8px'},'No sessions for '+hd.label+' yet.'));return;}
+    logs.forEach((log,idx)=>{
+      const prev=logs[idx+1]||null;
+      const card=el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',marginBottom:'9px',overflow:'hidden'});
+      const hdr=el('div',{padding:'9px 12px',borderBottom:'1px solid #e4e8ef',display:'flex',justifyContent:'space-between',alignItems:'center',background:hd.color+'08'});
+      const left=el('div',{});
+      const dateRow=el('div',{fontSize:'13px',fontWeight:'600',color:'#0f172a',display:'flex',gap:'7px',alignItems:'center'});
+      dateRow.appendChild(document.createTextNode(fmtDate(log.date)));
+      if(log.wasRecovery){const badge=el('span',{fontSize:'9px',fontWeight:'600',color:'#d97706',background:'#fffbeb',padding:'1px 6px',borderRadius:'8px'},'RECOVERY');dateRow.appendChild(badge);}
+      left.appendChild(dateRow);
+      left.appendChild(el('div',{fontSize:'10px',color:'#94a3b8',marginTop:'1px'},log.dayLabel+' · '+log.dayTitle));
+      hdr.appendChild(left);
+      const right=el('div',{textAlign:'right'});
+      right.appendChild(el('div',{fontSize:'12px',fontWeight:'700',color:rpeColor(log.rpe)},'RPE '+log.rpe));
+      right.appendChild(el('div',{fontSize:'10px',color:'#94a3b8'},(log.exercises?.filter(e=>e.done).length||0)+'/'+(log.exercises?.length||0)+' done'));
+      if(log.durationMins)right.appendChild(el('div',{fontSize:'10px',color:'#94a3b8'},log.durationMins+' min'));
+      hdr.appendChild(right);
+      card.appendChild(hdr);
+
+      const body=el('div',{padding:'7px 12px'});
+      (log.exercises||[]).forEach(ex=>{
+        const sets=(ex.sets||[]).filter(s=>s.reps||s.weight);
+        const row=el('div',{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #e4e8ef',alignItems:'flex-start',gap:'6px'});
+        const nameCol=el('div',{fontSize:'11px',color:ex.done?'#059669':'#94a3b8',flex:'1',minWidth:'0'});
+        nameCol.appendChild(document.createTextNode(ex.name));
+        if(prev){
+          const prevEx=(prev.exercises||[]).find(e=>e.id===ex.id);
+          if(prevEx){
+            const curMaxW=Math.max(...sets.map(s=>parseFloat(s.weight)||0),0);
+            const curTotalReps=sets.reduce((a,s)=>a+(parseInt(s.reps)||0),0);
+            const prevSets=(prevEx.sets||[]).filter(s=>s.reps||s.weight);
+            const prevMaxW=Math.max(...prevSets.map(s=>parseFloat(s.weight)||0),0);
+            const prevTotalReps=prevSets.reduce((a,s)=>a+(parseInt(s.reps)||0),0);
+            const dW=curMaxW-prevMaxW;
+            const dR=curTotalReps-prevTotalReps;
+            const parts=[];
+            if(Math.abs(dW)>0.01&&curMaxW>0&&prevMaxW>0)parts.push((dW>0?'+':'')+dW+' lb');
+            if(dR!==0&&curTotalReps>0&&prevTotalReps>0)parts.push((dR>0?'+':'')+dR+' reps');
+            if(parts.length){
+              const isPos=dW>0||(dW===0&&dR>0);
+              const isNeg=dW<0||(dW===0&&dR<0);
+              const dColor=isPos?'#059669':isNeg?'#dc2626':'#94a3b8';
+              const dBg=isPos?'#f0fdf4':isNeg?'#fef2f2':'#f8f9fb';
+              nameCol.appendChild(el('div',{fontSize:'9px',color:dColor,background:dBg,padding:'1px 5px',borderRadius:'4px',marginTop:'2px',display:'inline-block',fontWeight:'600'},parts.join(' · ')));
+            }
+          }
+        }
+        row.appendChild(nameCol);
+        const rside=el('div',{fontSize:'11px',color:'#475569',textAlign:'right',maxWidth:'55%',flexShrink:'0'});
+        if(sets.length){const exDef=ALL_EX.find(e=>e.id===ex.id);const u=exDef?exDef.u:'lb';sets.forEach(s=>{const txt=setDisp(s,u);if(txt){const sp=el('span',{marginLeft:'5px'},txt);rside.appendChild(sp);}});}
+        else rside.appendChild(el('span',{color:'#94a3b8'},'—'));
+        row.appendChild(rside);
+        body.appendChild(row);
+      });
+      if(log.notes)body.appendChild(el('div',{marginTop:'5px',fontSize:'11px',color:'#475569',fontStyle:'italic'},'"'+log.notes+'"'));
+      card.appendChild(body);
+      content.appendChild(card);
     });
-    if(log.notes) body.appendChild(el('div',{marginTop:'5px',fontSize:'11px',color:'#475569',fontStyle:'italic'},'"'+log.notes+'"'));
-    card.appendChild(body);
-    content.appendChild(card);
-  });
+  } else {
+    // === BY EXERCISE VIEW ===
+    hd.exercises.forEach(ex=>{
+      const exLogs=logs.map(l=>({date:l.date,sets:((l.exercises||[]).find(e=>e.id===ex.id)?.sets||[]).filter(s=>s.reps||s.weight),rpe:l.rpe})).filter(e=>e.sets.length>0);
+      const isOpen=state.histExpandedEx===ex.id;
+      const card=el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',marginBottom:'7px'});
+      const hdr=el('div',{padding:'10px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'});
+      hdr.addEventListener('click',()=>{state.histExpandedEx=isOpen?null:ex.id;render();});
+      const left=el('div',{flex:'1',minWidth:'0'});
+      left.appendChild(el('div',{fontSize:'13px',fontWeight:'600',color:'#0f172a'},ex.name));
+      const subtitle=exLogs.length===0?'No data yet':exLogs.length+' session'+(exLogs.length===1?'':'s')+' logged';
+      left.appendChild(el('div',{fontSize:'10px',color:'#94a3b8',marginTop:'1px'},subtitle));
+      hdr.appendChild(left);
+      const right=el('div',{textAlign:'right',flexShrink:'0'});
+      if(exLogs.length>0){
+        const allW=exLogs.flatMap(e=>e.sets.map(s=>parseFloat(s.weight)||0));
+        const maxW=Math.max(...allW,0);
+        if(maxW>0){right.appendChild(el('div',{fontSize:'13px',fontWeight:'700',color:'#2563eb'},maxW+' lb max'));}
+        else{const allR=exLogs.flatMap(e=>e.sets.map(s=>parseInt(s.reps)||0));const maxR=Math.max(...allR,0);if(maxR>0)right.appendChild(el('div',{fontSize:'13px',fontWeight:'700',color:'#2563eb'},maxR+' reps max'));}
+      }
+      right.appendChild(el('div',{fontSize:'10px',color:'#94a3b8',marginTop:'1px'},isOpen?'▲':'▼'));
+      hdr.appendChild(right);
+      card.appendChild(hdr);
+
+      if(isOpen&&exLogs.length>0){
+        const body=el('div',{padding:'0 12px 10px',borderTop:'1px solid #e4e8ef'});
+        const wByDate=[...exLogs].reverse().map(e=>Math.max(...e.sets.map(s=>parseFloat(s.weight)||0),0));
+        const isWeighted=wByDate.some(v=>v>0);
+        const sparkData=isWeighted?wByDate:[...exLogs].reverse().map(e=>Math.max(...e.sets.map(s=>parseInt(s.reps)||0),0));
+        if(sparkData.length>=2&&sparkData.some(v=>v>0)){
+          const maxV=Math.max(...sparkData,1);
+          const nonZero=sparkData.filter(v=>v>0);
+          const minV=nonZero.length?Math.min(...nonZero):0;
+          const range=Math.max(maxV-minV,1);
+          const sparkW=240,sparkH=36;
+          const svgNS='http://www.w3.org/2000/svg';
+          const svg=document.createElementNS(svgNS,'svg');
+          svg.setAttribute('width','100%');svg.setAttribute('height',sparkH);svg.setAttribute('viewBox','0 0 '+sparkW+' '+sparkH);svg.setAttribute('preserveAspectRatio','none');svg.style.marginTop='8px';svg.style.display='block';
+          const stepX=sparkData.length>1?sparkW/(sparkData.length-1):sparkW/2;
+          const points=sparkData.map((v,i)=>{const x=sparkData.length>1?i*stepX:sparkW/2;const y=v===0?sparkH-2:sparkH-2-((v-minV)/range)*(sparkH-6);return [x,y];});
+          if(points.length>1){const path=document.createElementNS(svgNS,'polyline');path.setAttribute('points',points.map(p=>p.join(',')).join(' '));path.setAttribute('fill','none');path.setAttribute('stroke',hd.color);path.setAttribute('stroke-width','2');path.setAttribute('stroke-linecap','round');path.setAttribute('stroke-linejoin','round');svg.appendChild(path);}
+          points.forEach(p=>{const c=document.createElementNS(svgNS,'circle');c.setAttribute('cx',p[0]);c.setAttribute('cy',p[1]);c.setAttribute('r','2.5');c.setAttribute('fill',hd.color);svg.appendChild(c);});
+          body.appendChild(svg);
+          const sparkLabels=el('div',{fontSize:'9px',color:'#94a3b8',display:'flex',justifyContent:'space-between',marginTop:'2px',marginBottom:'8px'});
+          sparkLabels.appendChild(el('span',{},'oldest'));
+          sparkLabels.appendChild(el('span',{},(isWeighted?'max lb':'max reps')+' per session'));
+          sparkLabels.appendChild(el('span',{},'newest'));
+          body.appendChild(sparkLabels);
+        }
+        exLogs.forEach(e=>{
+          const row=el('div',{display:'flex',justifyContent:'space-between',padding:'5px 0',borderTop:'1px solid #f1f5f9',alignItems:'center',fontSize:'11px',gap:'8px'});
+          row.appendChild(el('div',{color:'#0f172a',fontWeight:'500',flexShrink:'0'},fmtDate(e.date)));
+          const setsText=e.sets.map(s=>setDisp(s,ex.u)).filter(Boolean).join('  ');
+          row.appendChild(el('div',{color:'#475569',fontFamily:'ui-monospace,SFMono-Regular,Menlo,monospace',fontSize:'10px',textAlign:'right'},setsText));
+          body.appendChild(row);
+        });
+        card.appendChild(body);
+      } else if(isOpen&&exLogs.length===0){
+        card.appendChild(el('div',{padding:'10px 12px',borderTop:'1px solid #e4e8ef',fontSize:'11px',color:'#94a3b8'},'No sessions logged for this exercise yet.'));
+      }
+      content.appendChild(card);
+    });
+  }
 }
 
 function buildStats(content, prs, total) {
