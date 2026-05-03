@@ -409,7 +409,7 @@ function buildToday(content, day, total, prs) {
   DAYS.forEach((d,i)=>{
     const btn=h('button',{className:'day-pill'+(state.dayIdx===i?' active':''),
       style:{'--day-color':d.color,'--day-color-light':d.color+'12'},
-      onClick:()=>{state.dayIdx=i;state.session={};state.exRpe={};state.expandedEx=null;state.aiRec=null;state.showCue=null;state.showWarmup=null;state.sessionStart=Date.now();render();}});
+      onClick:()=>{state.dayIdx=i;state.session={};state.exRpe={};state.expandedEx=null;state.aiRec=null;state.showCue=null;state.showWarmup=null;state.sessionStart=null;render();}});
     btn.appendChild(el('div',{fontSize:'9px',fontWeight:'700',color:state.dayIdx===i?d.color:'#94a3b8'},d.label));
     btn.appendChild(el('div',{fontSize:'8px',color:'#94a3b8',marginTop:'1px'},d.title.split(' ').slice(0,2).join(' ')));
     dayGrid.appendChild(btn);
@@ -428,6 +428,19 @@ function buildToday(content, day, total, prs) {
   warmupRow.appendChild(warmupInp);
   sessCard.appendChild(warmupRow);
   content.appendChild(sessCard);
+
+  // Start Session button / elapsed timer
+  if(!state.sessionStart){
+    content.appendChild(h('button',{className:'btn',style:{width:'100%',padding:'11px',background:'#059669',border:'none',color:'#fff',fontSize:'13px',fontWeight:'600',borderRadius:'10px',marginBottom:'10px'},
+      onClick:()=>{state.sessionStart=Date.now();render();}},'▶ Start Session'));
+  } else {
+    const elapsed=Math.floor((Date.now()-state.sessionStart)/60000);
+    const elapsedSecs=Math.floor(((Date.now()-state.sessionStart)%60000)/1000);
+    const elRow=el('div',{background:'#f0fdf4',border:'1px solid rgba(5,150,105,0.3)',borderRadius:'10px',padding:'9px 14px',marginBottom:'10px',display:'flex',justifyContent:'space-between',alignItems:'center'});
+    elRow.appendChild(el('div',{fontSize:'11px',fontWeight:'600',color:'#059669'},'Session in progress'));
+    elRow.appendChild(el('div',{fontSize:'15px',fontWeight:'700',color:'#059669'},elapsed+'m '+elapsedSecs+'s'));
+    content.appendChild(elRow);
+  }
 
   // Copy last session
   const lastForDay=Object.values(state.data.logs).filter(l=>l.dayId===day.id).sort((a,b)=>b.date.localeCompare(a.date))[0]||null;
@@ -1115,7 +1128,6 @@ function renderPlateResult(box, pc) {
 
 // Init
 state.data=loadData();
-state.sessionStart=Date.now();
 render();
 </script>
 </body>
