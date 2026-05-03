@@ -158,6 +158,7 @@ let state = {
   missedReason: '',
   showPlateCalc: false,
   plateTarget: '',
+  sessionStart: null,
 };
 let timerInterval = null;
 
@@ -274,7 +275,8 @@ async function saveSession() {
       done:(state.session[ex.id]||{}).done||false,
       rpe:state.exRpe[ex.id]||null
     })),
-    wasRecovery:!!state.recovery
+    wasRecovery:!!state.recovery,
+    durationMins:state.sessionStart?Math.round((Date.now()-state.sessionStart)/60000):null
   };
   const key=state.sessionDate+'_'+day.id;
   const nd={...state.data, weights:{...state.data.weights,...nw}, logs:{...state.data.logs,[key]:entry},
@@ -282,7 +284,7 @@ async function saveSession() {
     recovery:null};
   saveData(nd);
   state.data=nd; state.recovery=null; state.session={}; state.exRpe={}; state.notes=''; state.bwIn='';
-  state.sessionDate=todayStr(); state.saved=true;
+  state.sessionDate=todayStr(); state.sessionStart=null; state.saved=true;
   render();
   setTimeout(()=>{state.saved=false;render();},2500);
   if(Object.keys(nd.logs).length>=3) fetchAI(nd);
@@ -407,7 +409,7 @@ function buildToday(content, day, total, prs) {
   DAYS.forEach((d,i)=>{
     const btn=h('button',{className:'day-pill'+(state.dayIdx===i?' active':''),
       style:{'--day-color':d.color,'--day-color-light':d.color+'12'},
-      onClick:()=>{state.dayIdx=i;state.session={};state.expandedEx=null;state.aiRec=null;state.showCue=null;state.showWarmup=null;render();}});
+      onClick:()=>{state.dayIdx=i;state.session={};state.exRpe={};state.expandedEx=null;state.aiRec=null;state.showCue=null;state.showWarmup=null;state.sessionStart=Date.now();render();}});
     btn.appendChild(el('div',{fontSize:'9px',fontWeight:'700',color:state.dayIdx===i?d.color:'#94a3b8'},d.label));
     btn.appendChild(el('div',{fontSize:'8px',color:'#94a3b8',marginTop:'1px'},d.title.split(' ').slice(0,2).join(' ')));
     dayGrid.appendChild(btn);
@@ -934,6 +936,7 @@ function buildHistory(content) {
     const right=el('div',{textAlign:'right'});
     right.appendChild(el('div',{fontSize:'12px',fontWeight:'700',color:rpeColor(log.rpe)},'RPE '+log.rpe));
     right.appendChild(el('div',{fontSize:'10px',color:'#94a3b8'},(log.exercises?.filter(e=>e.done).length||0)+'/'+(log.exercises?.length||0)+' done'));
+    if(log.durationMins) right.appendChild(el('div',{fontSize:'10px',color:'#94a3b8'},log.durationMins+' min'));
     hdr.appendChild(right);
     card.appendChild(hdr);
     const body=el('div',{padding:'7px 12px'});
@@ -1112,6 +1115,7 @@ function renderPlateResult(box, pc) {
 
 // Init
 state.data=loadData();
+state.sessionStart=Date.now();
 render();
 </script>
 </body>
