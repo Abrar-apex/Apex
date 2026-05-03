@@ -499,7 +499,25 @@ function buildExCard(ex, prs) {
   const header=el('div',{cursor:'pointer',padding:'10px 12px',display:'flex',alignItems:'center',gap:'9px'});
   header.addEventListener('click',()=>{state.expandedEx=open?null:ex.id;render();});
 
-  const chk=h('button',{className:'chk'+(done?' done':''),onClick:e=>{e.stopPropagation();const s=state.session[ex.id]||{};state.session[ex.id]={...s,done:!s.done};render();}},done?'✓':'');
+  const chk=h('button',{className:'chk'+(done?' done':''),onClick:e=>{
+    e.stopPropagation();
+    const s=state.session[ex.id]||{};
+    const nowDone=!s.done;
+    if(nowDone && !(s.sets&&s.sets.some(x=>x.weight||x.reps))) {
+      // Auto-fill recommended sets/reps/weight when checking
+      const sets=[];
+      for(let i=0;i<ex.sets;i++){
+        sets.push({
+          weight:isbw(ex.u)?'':String(getW(ex.id,ex.sw)),
+          reps:ex.reps>0?String(ex.reps):''
+        });
+      }
+      state.session[ex.id]={...s,done:true,sets};
+    } else {
+      state.session[ex.id]={...s,done:nowDone};
+    }
+    render();
+  }},done?'✓':'');
   header.appendChild(chk);
 
   const info=el('div',{flex:'1',minWidth:'0'});
