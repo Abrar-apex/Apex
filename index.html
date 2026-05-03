@@ -75,8 +75,9 @@ const DAYS = [
   ]},
   {id:'d2',label:'DAY 2',title:'Upper Body Push + Pull',color:'#7c3aed',
    warmup:'5 min incline walk 2.0 @ 10',finisher:'10 min incline treadmill 2.2 @ 15',
+   supersets:[{label:'Push/Pull Superset',note:'4 rounds, 45s rest between rounds',exIds:['db_chest_press','cable_row','db_shoulder','lat_pulldown']}],
    exercises:[
-    {id:'db_chest_press',name:'Single-Arm DB Press (R)',sets:4,reps:10,sw:30,u:'lb',cue:'Right elbow tends to flare — tuck 45 degrees and press'},
+    {id:'db_chest_press',name:'Single-Arm DB Bench Press (R)',sets:4,reps:10,sw:30,u:'lb',cue:'Right elbow tends to flare — tuck 45 degrees and press'},
     {id:'cable_row',name:'Seated Cable Row',sets:4,reps:12,sw:50,u:'lb',cue:'Right scapula — retract and depress at peak'},
     {id:'db_shoulder',name:'DB Shoulder Press',sets:3,reps:10,sw:20,u:'lb',cue:'Right shoulder elevates — pack it down before pressing'},
     {id:'lat_pulldown',name:'Lat Pulldown',sets:3,reps:12,sw:60,u:'lb',cue:'Initiate with right elbow pulling down'},
@@ -107,6 +108,7 @@ const DAYS = [
 const ALL_EX = DAYS.flatMap(d => d.exercises);
 const isbw = u => u==='bw'||u==='max';
 const ulb = u => ({lb:'lb',bw:'BW',sec:'sec',max:'max',assist:'lb assist'}[u]||u);
+const getSuperset = (day, exId) => (day.supersets||[]).find(s => s.exIds.includes(exId)) || null;
 const todayStr = () => new Date().toISOString().slice(0,10);
 const fmtDate = k => { const [y,m,d]=k.split('-'); return m+'/'+d+'/'+y.slice(2); };
 const rpeColor = r => r<=4?'#059669':r<=6?'#d97706':r<=8?'#2563eb':'#dc2626';
@@ -473,7 +475,35 @@ function buildToday(content, day, total, prs) {
   content.appendChild(bwRow);
 
   // Exercises
-  day.exercises.forEach(ex=>content.appendChild(buildExCard(ex,prs)));
+  const renderedToday=new Set();
+  day.exercises.forEach(ex=>{
+    if(renderedToday.has(ex.id)) return;
+    const ss=getSuperset(day,ex.id);
+    if(ss && ss.exIds[0]===ex.id){
+      const wrap=el('div',{background:day.color+'08',border:'1px dashed '+day.color+'66',borderRadius:'12px',padding:'8px',marginBottom:'6px'});
+      const lbl=el('div',{display:'flex',alignItems:'center',gap:'6px',padding:'2px 4px 8px',fontSize:'10px',fontWeight:'700',color:day.color,textTransform:'uppercase',letterSpacing:'0.08em'});
+      lbl.appendChild(el('span',{fontSize:'12px'},'⟳'));
+      lbl.appendChild(document.createTextNode(ss.label));
+      lbl.appendChild(el('span',{fontSize:'9px',fontWeight:'600',color:'#94a3b8',marginLeft:'auto',textTransform:'none',letterSpacing:'0'},'shared rest timer'));
+      wrap.appendChild(lbl);
+      if(ss.note) wrap.appendChild(el('div',{fontSize:'11px',color:'#64748b',padding:'0 4px 8px',lineHeight:'1.4'},ss.note));
+      ss.exIds.forEach(id=>{
+        const e=day.exercises.find(x=>x.id===id);
+        if(e){
+          const c=buildExCard(e,prs);
+          c.style.marginBottom='6px';
+          wrap.appendChild(c);
+          renderedToday.add(id);
+        }
+      });
+      // strip last child margin
+      if(wrap.lastChild&&wrap.lastChild.style) wrap.lastChild.style.marginBottom='0';
+      content.appendChild(wrap);
+    } else {
+      content.appendChild(buildExCard(ex,prs));
+      renderedToday.add(ex.id);
+    }
+  });
 
   // Finisher
   const finVal=state.finisherEdit[day.id]!==undefined?state.finisherEdit[day.id]:day.finisher;
@@ -767,7 +797,7 @@ function buildPlan(content) {
     hdr.appendChild(el('div',{fontSize:'14px',fontWeight:'700',color:pd.color},pd.title));
     hdr.appendChild(el('div',{fontSize:'11px',color:'#94a3b8',marginTop:'2px'},'Warm-up: '+pd.warmup));
     content.appendChild(hdr);
-    pd.exercises.forEach((ex,ei)=>{
+    const buildPlanCard=(ex,ei)=>{
       const key='p'+state.planIdx+'_'+ei;
       const card=el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',marginBottom:'6px'});
       const row=el('div',{padding:'10px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'});
@@ -787,7 +817,35 @@ function buildPlan(content) {
         if(ex.cue) body.appendChild(el('div',{fontSize:'12px',color:'#2563eb',marginTop:'6px',lineHeight:'1.55',borderLeft:'3px solid #2563eb',paddingLeft:'8px'},'Right side: '+ex.cue));
         card.appendChild(body);
       }
-      content.appendChild(card);
+      return card;
+    };
+    const renderedPlan=new Set();
+    pd.exercises.forEach((ex,ei)=>{
+      if(renderedPlan.has(ex.id)) return;
+      const ss=getSuperset(pd,ex.id);
+      if(ss && ss.exIds[0]===ex.id){
+        const wrap=el('div',{background:pd.color+'08',border:'1px dashed '+pd.color+'66',borderRadius:'12px',padding:'8px',marginBottom:'6px'});
+        const lbl=el('div',{display:'flex',alignItems:'center',gap:'6px',padding:'2px 4px 8px',fontSize:'10px',fontWeight:'700',color:pd.color,textTransform:'uppercase',letterSpacing:'0.08em'});
+        lbl.appendChild(el('span',{fontSize:'12px'},'⟳'));
+        lbl.appendChild(document.createTextNode(ss.label));
+        lbl.appendChild(el('span',{fontSize:'9px',fontWeight:'600',color:'#94a3b8',marginLeft:'auto',textTransform:'none',letterSpacing:'0'},'shared rest timer'));
+        wrap.appendChild(lbl);
+        if(ss.note) wrap.appendChild(el('div',{fontSize:'11px',color:'#64748b',padding:'0 4px 8px',lineHeight:'1.4'},ss.note));
+        ss.exIds.forEach(id=>{
+          const idx=pd.exercises.findIndex(x=>x.id===id);
+          if(idx>=0){
+            const c=buildPlanCard(pd.exercises[idx],idx);
+            c.style.marginBottom='6px';
+            wrap.appendChild(c);
+            renderedPlan.add(id);
+          }
+        });
+        if(wrap.lastChild&&wrap.lastChild.style) wrap.lastChild.style.marginBottom='0';
+        content.appendChild(wrap);
+      } else {
+        content.appendChild(buildPlanCard(ex,ei));
+        renderedPlan.add(ex.id);
+      }
     });
     content.appendChild(el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',padding:'9px 12px',fontSize:'12px',color:'#2563eb',fontWeight:'500'},'Finisher: '+pd.finisher));
   }
