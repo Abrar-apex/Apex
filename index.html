@@ -79,8 +79,8 @@ const DAYS = [
    exercises:[
     {id:'db_chest_press',name:'Single-Arm DB Bench Press (R)',sets:4,reps:10,sw:30,u:'lb',cue:'Right elbow tends to flare — tuck 45 degrees and press'},
     {id:'cable_row',name:'Seated Cable Row',sets:4,reps:12,sw:50,u:'lb',cue:'Right scapula — retract and depress at peak'},
-    {id:'db_shoulder',name:'DB Shoulder Press',sets:3,reps:10,sw:20,u:'lb',cue:'Right shoulder elevates — pack it down before pressing'},
-    {id:'lat_pulldown',name:'Lat Pulldown',sets:3,reps:12,sw:60,u:'lb',cue:'Initiate with right elbow pulling down'},
+    {id:'db_shoulder',name:'DB Shoulder Press',sets:4,reps:10,sw:20,u:'lb',cue:'Right shoulder elevates — pack it down before pressing'},
+    {id:'lat_pulldown',name:'Lat Pulldown',sets:4,reps:12,sw:60,u:'lb',cue:'Initiate with right elbow pulling down'},
     {id:'incline_curl',name:'Incline DB Curl (R first)',sets:2,reps:12,sw:15,u:'lb',cue:'Supinate fully at top of rep'},
     {id:'tricep_pushdown',name:'Tricep Rope Pushdown',sets:2,reps:15,sw:30,u:'lb',cue:''},
     {id:'face_pull',name:'Face Pull',sets:2,reps:15,sw:25,u:'lb',cue:''},
@@ -191,6 +191,39 @@ let state = {
 };
 let timerInterval = null;
 let sessionInterval = null;
+
+const SB_URL='https://lhojvyjlytztewutdmxm.supabase.co';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxob2p2eWpseXR6dGV3dXRkbXhtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwMTMxMjEsImV4cCI6MjA5MzU4OTEyMX0.9_VTJKFwJ3t6IrOMwAaDuSF67a56-0vYXHSSmhQ8oEg';
+const SB_HEADERS={'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Prefer':'resolution=merge-duplicates'};
+function getUserId(){let id=localStorage.getItem('apex_uid');if(!id){id='u_'+Math.random().toString(36).slice(2)+Date.now().toString(36);localStorage.setItem('apex_uid',id);}return id;}
+const USER_ID=getUserId();
+
+async function sbSave(entry,key){
+  try{
+    const row={id:key,user_id:USER_ID,date:entry.date,day_id:entry.dayId,day_label:entry.dayLabel,day_title:entry.dayTitle,
+      exercises:entry.exercises,rpe:entry.rpe,notes:entry.notes||null,duration_mins:entry.durationMins||null,
+      body_weight:entry.bodyWeight||null,was_recovery:entry.wasRecovery||false};
+    await fetch(SB_URL+'/rest/v1/workout_logs',{method:'POST',headers:SB_HEADERS,body:JSON.stringify(row)});
+  }catch(e){console.warn('Supabase save failed:',e);}
+}
+
+async function sbLoad(){
+  try{
+    const res=await fetch(SB_URL+'/rest/v1/workout_logs?user_id=eq.'+USER_ID+'&order=date.asc&limit=500',{headers:{...SB_HEADERS,'Prefer':''}});
+    if(!res.ok) return null;
+    const rows=await res.json();
+    if(!Array.isArray(rows)||!rows.length) return null;
+    const logs={};
+    rows.forEach(r=>{
+      const key=r.date+'_'+r.day_id;
+      logs[key]={date:r.date,dayId:r.day_id,dayLabel:r.day_label,dayTitle:r.day_title,
+        exercises:r.exercises,rpe:r.rpe,notes:r.notes||'',durationMins:r.duration_mins,
+        bodyWeight:r.body_weight,wasRecovery:r.was_recovery};
+    });
+    return logs;
+  }catch(e){console.warn('Supabase load failed:',e);return null;}
+}
+
 
 // Storage
 function loadData() {
@@ -313,6 +346,7 @@ async function saveSession() {
     bw:state.bwIn?[...state.data.bw,{date:state.sessionDate,v:parseFloat(state.bwIn)}]:state.data.bw,
     recovery:null};
   saveData(nd);
+  sbSave(entry, key);
   state.data=nd; state.recovery=null; state.session={}; state.exRpe={}; state.notes=''; state.bwIn='';
   state.sessionDate=todayStr(); state.sessionStart=null; clearInterval(sessionInterval); sessionInterval=null; state.saved=true;
   render();
@@ -1377,6 +1411,16 @@ function renderPlateResult(box, pc) {
 // Init
 state.data=loadData();
 render();
+// Pull from Supabase and merge (remote wins for existing keys)
+(async()=>{
+  const remoteLogs=await sbLoad();
+  if(remoteLogs&&Object.keys(remoteLogs).length){
+    const merged={...state.data.logs,...remoteLogs};
+    state.data={...state.data,logs:merged};
+    saveData(state.data);
+    render();
+  }
+})();
 </script>
 </body>
 </html>
