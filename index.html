@@ -308,13 +308,13 @@ function getW(exId, fb) {
 // Timer
 function startTimer(s) {
   clearInterval(timerInterval);
-  state.timerDuration=s; state.timerEnd=Date.now()+(s*1000); state.timerRunning=true; render();
+  state.timerDuration=s; state.timerEnd=Date.now()+(s*1000); state.timerSecs=s; state.timerRunning=true; render();
   timerInterval=setInterval(()=>{
     const rem=Math.max(0,Math.ceil((state.timerEnd-Date.now())/1000));
     state.timerSecs=rem;
     if(rem<=0){clearInterval(timerInterval);state.timerRunning=false;state.timerSecs=0;}
-    updateTimer();
-  },500);
+    render();
+  },1000);
 }
 function stopTimer(){clearInterval(timerInterval);state.timerRunning=false;state.timerSecs=null;state.timerEnd=null;render();}
 
@@ -563,30 +563,7 @@ function buildApp() {
   wrap.appendChild(content);
 
   // Footer
-  wrap.appendChild(el('div',{padding:'10px 16px',borderTop:'1px solid #e4e8ef',fontSize:'10px',color:'#94a3b8',textAlign:'center',display:'flex',justifyContent:'center',gap:'12px',alignItems:'center'},[
-    document.createTextNode('Apex Training · Synced to cloud'),
-    Object.assign(document.createElement('button'),{
-      textContent:'Debug',
-      onclick: async()=>{
-        const uid=localStorage.getItem('apex_uid')||'NOT FOUND';
-        let msg='User ID: '+uid+'\n\n';
-        try{
-          const res=await fetch(SB_URL+'/rest/v1/workout_logs?user_id=eq.'+uid+'&order=date.asc&limit=500',{headers:{...SB_HEADERS,'Prefer':''}});
-          msg+='Status: '+res.status+'\n';
-          if(res.ok){
-            const rows=await res.json();
-            msg+='Rows found: '+rows.length+'\n';
-            if(rows.length) msg+='Latest: '+rows[rows.length-1].date+' ('+rows[rows.length-1].day_id+')';
-            else msg+='No rows found for this user ID in Supabase.';
-          } else {
-            msg+='Error: '+await res.text();
-          }
-        }catch(e){msg+='Fetch failed: '+e.message;}
-        alert(msg);
-      },
-      style:'font-size:10px;padding:2px 8px;border:1px solid #e4e8ef;border-radius:4px;background:#f8f9fb;color:#94a3b8;cursor:pointer;'
-    })
-  ]));
+  wrap.appendChild(el('div',{padding:'10px 16px',borderTop:'1px solid #e4e8ef',fontSize:'10px',color:'#94a3b8',textAlign:'center'},'Apex Training · Synced to cloud'));
 
   // Overlays
   if(state.showMissed) wrap.appendChild(buildMissedOverlay());
@@ -905,7 +882,7 @@ function buildTimer() {
   const wrap=el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',padding:'10px 12px',marginBottom:'10px'});
   const top=el('div',{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'7px'});
   top.appendChild(el('div',{fontSize:'11px',fontWeight:'600',color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.06em'},'Rest Timer'));
-  const lbl=el('div',{fontSize:'18px',fontWeight:'700',color:state.timerSecs<=10?'#dc2626':'#2563eb',id:'timer-label'},state.timerRunning?state.timerSecs+'s':'');
+  const lbl=el('div',{fontSize:'18px',fontWeight:'700',color:(state.timerSecs||0)<=10&&state.timerRunning?'#dc2626':'#2563eb',id:'timer-label'},state.timerRunning&&state.timerSecs?(state.timerSecs+'s'):'');
   top.appendChild(lbl);
   wrap.appendChild(top);
   const bar=el('div',{className:'timer-bar'});
