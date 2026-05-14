@@ -540,7 +540,30 @@ function buildApp() {
   wrap.appendChild(content);
 
   // Footer
-  wrap.appendChild(el('div',{padding:'10px 16px',borderTop:'1px solid #e4e8ef',fontSize:'10px',color:'#94a3b8',textAlign:'center'},'Apex Training · Synced to cloud'));
+  wrap.appendChild(el('div',{padding:'10px 16px',borderTop:'1px solid #e4e8ef',fontSize:'10px',color:'#94a3b8',textAlign:'center',display:'flex',justifyContent:'center',gap:'12px',alignItems:'center'},[
+    document.createTextNode('Apex Training · Synced to cloud'),
+    Object.assign(document.createElement('button'),{
+      textContent:'Debug',
+      onclick: async()=>{
+        const uid=localStorage.getItem('apex_uid')||'NOT FOUND';
+        let msg='User ID: '+uid+'\n\n';
+        try{
+          const res=await fetch(SB_URL+'/rest/v1/workout_logs?user_id=eq.'+uid+'&order=date.asc&limit=500',{headers:{...SB_HEADERS,'Prefer':''}});
+          msg+='Status: '+res.status+'\n';
+          if(res.ok){
+            const rows=await res.json();
+            msg+='Rows found: '+rows.length+'\n';
+            if(rows.length) msg+='Latest: '+rows[rows.length-1].date+' ('+rows[rows.length-1].day_id+')';
+            else msg+='No rows found for this user ID in Supabase.';
+          } else {
+            msg+='Error: '+await res.text();
+          }
+        }catch(e){msg+='Fetch failed: '+e.message;}
+        alert(msg);
+      },
+      style:'font-size:10px;padding:2px 8px;border:1px solid #e4e8ef;border-radius:4px;background:#f8f9fb;color:#94a3b8;cursor:pointer;'
+    })
+  ]));
 
   // Overlays
   if(state.showMissed) wrap.appendChild(buildMissedOverlay());
