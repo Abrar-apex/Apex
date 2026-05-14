@@ -366,6 +366,18 @@ function calcProgressionRec(d, day) {
   const logs=Object.values(d.logs).filter(l=>l.dayId===day.id).sort((a,b)=>b.date.localeCompare(a.date));
   if(!logs.length) return null;
   const lastLog=logs[0];
+  const prevLog=logs[1]||null;
+  // If last session was a recovery or deload, suppress increases for one session
+  if(lastLog.wasRecovery||lastLog.wasDeload){
+    const maintainResults=day.exercises.filter(e=>!isbw(e.u)).map(ex=>({
+      ex, curW:state.data.weights?.[ex.id]??ex.sw,
+      action:'stay', note:'First session back — consolidate before progressing', color:'#2563eb'
+    }));
+    const recent=Object.values(d.logs).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
+    const recentRpes=recent.map(l=>l.rpe||0).filter(Boolean);
+    const avgRpe=recentRpes.length?recentRpes.reduce((a,b)=>a+b,0)/recentRpes.length:0;
+    return{results:maintainResults,trend:'on track',avgRpe:avgRpe.toFixed(1),lastDate:lastLog.date,wasRecovery:true};
+  }
   const results=[];
   day.exercises.filter(e=>!isbw(e.u)).forEach(ex=>{
     const lastEx=lastLog.exercises?.find(e=>e.id===ex.id);
@@ -408,25 +420,36 @@ function calcMissedRecovery(daysOut, reason) {
   else if(daysOut<=14){pct=0.275;targetRpe=5;deloadLevel='Significant';gapLabel='2 Weeks';}
   else if(daysOut<=21){pct=0.375;targetRpe=5;deloadLevel='Full Reset';gapLabel='3 Weeks';}
   else{pct=0.45;targetRpe=4;deloadLevel='Start Fresh';gapLabel='1 Month+';}
-  const overreaching=state.progressRec&&state.progressRec.trend==='overreaching';
-  if(overreaching){targetRpe=Math.min(targetRpe,6);}
+  const dayLogs=Object.values(state.data.logs).filter(l=>l.dayId===day.id).sort((a,b)=>b.date.localeCompare(a.date));
+  const lastLog=dayLogs[0]||null;
   const adjustedWeights={};
   day.exercises.filter(e=>!isbw(e.u)).forEach(ex=>{
-    const cur=state.data.weights?.[ex.id]??ex.sw;
-    // If overreaching, apply progression reduction first, then missed time deload on top
-    let baseW=cur;
-    if(overreaching&&state.progressRec){
-      const pRec=state.progressRec.results.find(r=>r.ex.id===ex.id);
-      if(pRec&&pRec.action==='decrease') baseW=Math.max(ex.sw,cur-5);
+    // Derive working weight: prefer state.data.weights, fallback to last log's last set
+    let baseW=ex.sw;
+    const storedW=state.data.weights?.[ex.id];
+    if(storedW&&storedW>0){
+      baseW=storedW;
+    } else if(lastLog){
+      const lastEx=lastLog.exercises?.find(e=>e.id===ex.id);
+      if(lastEx?.sets?.length){
+        const validW=lastEx.sets.map(s=>parseFloat(s.weight)).filter(w=>w>0);
+        if(validW.length) baseW=validW[validW.length-1];
+      }
     }
-    adjustedWeights[ex.id]=Math.max(Math.round(ex.sw*0.4/2.5)*2.5,Math.round(baseW*(1-pct)/2.5)*2.5);
+    // Per-exercise RPE: add 5% extra reduction if exercise hit RPE ≥ 9 last session
+    let exPct=pct;
+    if(lastLog){
+      const lastEx=lastLog.exercises?.find(e=>e.id===ex.id);
+      const exRpe=lastEx?.rpe||lastLog.rpe||7;
+      if(exRpe>=9) exPct=Math.min(0.5,pct+0.05);
+    }
+    adjustedWeights[ex.id]=Math.max(Math.round(ex.sw*0.4/2.5)*2.5,Math.round(baseW*(1-exPct)/2.5)*2.5);
   });
   const pctStr=Math.round(pct*100);
-  const overreachNote=overreaching?' Overreaching detected before the break — weights calculated from already-reduced baseline.':'';
   return {
     targetDayId:day.id, gapLabel:'Missed '+gapLabel, daysMissed:daysOut,
-    deloadLevel, targetRpe, adjustedWeights, overreaching,
-    context:'Missed '+daysOut+' day'+(daysOut!==1?'s':'')+' — coming back with a '+deloadLevel.toLowerCase()+' deload ('+pctStr+'% weight reduction). Target RPE '+targetRpe+'.'+overreachNote,
+    deloadLevel, targetRpe, adjustedWeights,
+    context:'Missed '+daysOut+' day'+(daysOut!==1?'s':'')+' — '+deloadLevel.toLowerCase()+' deload ('+pctStr+'% weight reduction). Target RPE '+targetRpe+'. Any exercise that hit RPE 9+ last session gets an extra 5% reduction.',
     sessionNotes:['Form over load today','Stop if anything feels off','Full session next time']
   };
 }
