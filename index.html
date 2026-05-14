@@ -178,8 +178,9 @@ let state = {
   recovery: null,
   timerSecs: null,
   timerRunning: false,
-  aiRec: null,
-  aiLoad: false,
+  timerEnd: null,
+  timerDuration: 60,
+  progressRec: null,
   showMissed: false,
   missedLoad: false,
   missedGap: 'd1',
@@ -303,21 +304,23 @@ function getW(exId, fb) {
 // Timer
 function startTimer(s) {
   clearInterval(timerInterval);
-  state.timerSecs=s; state.timerRunning=true; render();
+  state.timerDuration=s; state.timerEnd=Date.now()+(s*1000); state.timerRunning=true; render();
   timerInterval=setInterval(()=>{
-    state.timerSecs--;
-    if(state.timerSecs<=0){clearInterval(timerInterval);state.timerRunning=false;state.timerSecs=0;}
+    const rem=Math.max(0,Math.ceil((state.timerEnd-Date.now())/1000));
+    state.timerSecs=rem;
+    if(rem<=0){clearInterval(timerInterval);state.timerRunning=false;state.timerSecs=0;}
     updateTimer();
-  },1000);
+  },500);
 }
-function stopTimer(){clearInterval(timerInterval);state.timerRunning=false;state.timerSecs=null;render();}
+function stopTimer(){clearInterval(timerInterval);state.timerRunning=false;state.timerSecs=null;state.timerEnd=null;render();}
 
 function updateTimer() {
+  const rem=state.timerEnd?Math.max(0,Math.ceil((state.timerEnd-Date.now())/1000)):state.timerSecs||0;
   const fill=document.getElementById('timer-fill');
   const label=document.getElementById('timer-label');
-  const secs=state.timerSecs;
-  if(fill){fill.style.width=(Math.max(0,(secs/60)*100))+'%';fill.style.background=secs<=10?'#dc2626':'#2563eb';}
-  if(label){label.textContent=state.timerRunning?secs+'s':'';}
+  const dur=state.timerDuration||60;
+  if(fill){fill.style.width=(Math.max(0,(rem/dur)*100))+'%';fill.style.background=rem<=10?'#dc2626':'#2563eb';}
+  if(label){label.textContent=state.timerRunning&&rem>0?rem+'s':'';}
 }
 
 // Save session
@@ -349,52 +352,124 @@ async function saveSession() {
   sbSave(entry, key);
   state.data=nd; state.recovery=null; state.session={}; state.exRpe={}; state.notes=''; state.bwIn='';
   state.sessionDate=todayStr(); state.sessionStart=null; clearInterval(sessionInterval); sessionInterval=null; state.saved=true;
+  state.progressRec=calcProgressionRec(nd, day);
   render();
   setTimeout(()=>{state.saved=false;render();},2500);
-  if(Object.keys(nd.logs).length>=3) fetchAI(nd);
 }
 
-async function fetchAI(d) {
-  const entries=Object.values(d.logs);
-  if(entries.length<2) return;
-  const day=DAYS[state.dayIdx];
-  const sum={};
-  ALL_EX.filter(e=>!isbw(e.u)).forEach(ex=>{
-    const hist=Object.values(d.logs).filter(l=>l.exercises&&l.exercises.some(e=>e.id===ex.id))
-      .sort((a,b)=>a.date.localeCompare(b.date)).map(l=>({sets:l.exercises.find(e=>e.id===ex.id).sets||[]}));
-    const ws=hist.flatMap(h=>h.sets.map(s=>parseFloat(s.weight)).filter(Boolean));
-    if(ws.length) sum[ex.id]={name:ex.name,first:ws[0],last:ws[ws.length-1],max:Math.max(...ws),sessions:hist.length};
+// ── RULE-BASED PROGRESSION ────────────────────────────────────────────────────
+function calcProgressionRec(d, day) {
+  const logs=Object.values(d.logs).filter(l=>l.dayId===day.id).sort((a,b)=>b.date.localeCompare(a.date));
+  if(!logs.length) return null;
+  const lastLog=logs[0];
+  const results=[];
+  day.exercises.filter(e=>!isbw(e.u)).forEach(ex=>{
+    const lastEx=lastLog.exercises?.find(e=>e.id===ex.id);
+    if(!lastEx) return;
+    const sets=(lastEx.sets||[]).filter(s=>s.reps);
+    if(!sets.length) return;
+    const curW=d.weights?.[ex.id]??ex.sw;
+    const exRpe=lastEx.rpe||lastLog.rpe||7;
+    const repsTarget=ex.reps>0?ex.reps:1;
+    const allRepsHit=sets.length>=ex.sets&&sets.every(s=>parseInt(s.reps)>=repsTarget);
+    let action,note,color;
+    if(allRepsHit&&exRpe<=7){
+      const inc=curW<50?5:curW<100?5:10;
+      const newW=curW+inc;
+      action='increase'; note='+'+inc+' lb → '+newW+' lb'; color='#059669';
+    } else if(exRpe>=9){
+      action='decrease'; note='RPE '+exRpe+' — drop 5 lb or stay'; color='#dc2626';
+    } else if(!allRepsHit){
+      const done=sets.reduce((a,s)=>a+(parseInt(s.reps)||0),0);
+      const target=ex.sets*repsTarget;
+      action='stay'; note=done+'/'+target+' reps — hit all reps first'; color='#d97706';
+    } else {
+      action='stay'; note='RPE '+exRpe+' — almost ready (need ≤7)'; color='#d97706';
+    }
+    results.push({ex,curW,action,note,color});
   });
-  const rel={};
-  day.exercises.filter(e=>!isbw(e.u)).forEach(e=>{if(sum[e.id])rel[e.id]=sum[e.id];});
-  if(!Object.keys(rel).length) return;
-  state.aiLoad=true; render();
-  try {
-    const recent=Object.values(d.logs).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,8);
-    const prompt='Trainer. Recommend for '+day.title+'.\nProgress:'+JSON.stringify(rel,null,1)+'\nRPEs:'+recent.map(l=>l.dayLabel+':'+l.rpe).join(',')+'\nJSON only:{"nextWeights":{"id":n},"targetRpe":n,"focus":"1 sentence","flags":["max 2"],"trend":"improving|plateauing|overreaching"}';
-    const res=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:MODEL,max_tokens:600,messages:[{role:'user',content:prompt}]})});
-    const txt=((await res.json()).content||[]).find(b=>b.type==='text')?.text||'{}';
-    state.aiRec=JSON.parse(txt.replace(/```json|```/g,'').trim());
-  } catch{state.aiRec=null;}
-  state.aiLoad=false; render();
+  // Trend
+  const recent=Object.values(d.logs).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
+  const recentRpes=recent.map(l=>l.rpe||0).filter(Boolean);
+  const avgRpe=recentRpes.length?recentRpes.reduce((a,b)=>a+b,0)/recentRpes.length:0;
+  const trend=avgRpe>=8.5?'overreaching':avgRpe<=6?'improving':'on track';
+  return {results,trend,avgRpe:avgRpe.toFixed(1),lastDate:lastLog.date};
 }
 
-async function submitMissed() {
-  state.missedLoad=true; render();
+function calcMissedRecovery(daysOut, reason) {
+  const day=DAYS[state.dayIdx];
+  let pct,targetRpe,deloadLevel,gapLabel;
+  if(daysOut<=3){pct=0.08;targetRpe=7;deloadLevel='Light';gapLabel=daysOut+' Day'+(daysOut>1?'s':'');}
+  else if(daysOut<=7){pct=0.175;targetRpe=6;deloadLevel='Moderate';gapLabel='1 Week';}
+  else if(daysOut<=14){pct=0.275;targetRpe=5;deloadLevel='Significant';gapLabel='2 Weeks';}
+  else if(daysOut<=21){pct=0.375;targetRpe=5;deloadLevel='Full Reset';gapLabel='3 Weeks';}
+  else{pct=0.45;targetRpe=4;deloadLevel='Start Fresh';gapLabel='1 Month+';}
+  const adjustedWeights={};
+  day.exercises.filter(e=>!isbw(e.u)).forEach(ex=>{
+    const cur=state.data.weights?.[ex.id]??ex.sw;
+    adjustedWeights[ex.id]=Math.max(Math.round(ex.sw*0.4/2.5)*2.5,Math.round(cur*(1-pct)/2.5)*2.5);
+  });
+  const pctStr=Math.round(pct*100);
+  return {
+    targetDayId:day.id, gapLabel:'Missed '+gapLabel, daysMissed:daysOut,
+    deloadLevel, targetRpe, adjustedWeights,
+    context:'Missed '+daysOut+' day'+(daysOut!==1?'s':'')+' — coming back with a '+deloadLevel.toLowerCase()+' deload ('+pctStr+'% weight reduction). Target RPE '+targetRpe+'. Focus on form, not numbers.',
+    sessionNotes:['Form over load today','Stop if anything feels off','Full session next time']
+  };
+}
+
+function detectDeload() {
+  const logs=Object.values(state.data.logs).sort((a,b)=>b.date.localeCompare(a.date));
+  if(logs.length<6) return null;
+  const weekStart=d=>{const x=new Date(d);const dy=x.getDay();const diff=dy===0?-6:1-dy;x.setDate(x.getDate()+diff);x.setHours(0,0,0,0);return x;};
+  const today=new Date();
+  const thisWeek=weekStart(today);
+  const lastWeek=new Date(thisWeek);lastWeek.setDate(lastWeek.getDate()-7);
+  const twoWeeksAgo=new Date(thisWeek);twoWeeksAgo.setDate(twoWeeksAgo.getDate()-14);
+  const thisWL=logs.filter(l=>new Date(l.date)>=thisWeek);
+  const lastWL=logs.filter(l=>new Date(l.date)>=lastWeek&&new Date(l.date)<thisWeek);
+  const avg=arr=>arr.length?arr.reduce((a,l)=>a+(l.rpe||0),0)/arr.length:0;
+  if(thisWL.length>=2&&lastWL.length>=2&&avg(thisWL)>=8&&avg(lastWL)>=8){
+    return{reason:'rpe',msg:'Avg RPE '+avg(lastWL).toFixed(1)+' last wk, '+avg(thisWL).toFixed(1)+' this wk — 2 high-load weeks detected'};
+  }
+  const fourWA=new Date(thisWeek);fourWA.setDate(fourWA.getDate()-28);
+  const recentLogs=logs.filter(l=>new Date(l.date)>=fourWA);
+  const hasDeload=recentLogs.some(l=>l.wasDeload);
+  const weekKeys=new Set(recentLogs.map(l=>weekStart(new Date(l.date)).toISOString().slice(0,10)));
+  if(weekKeys.size>=4&&!hasDeload){
+    return{reason:'streak',msg:weekKeys.size+' consecutive weeks of training — deload week due'};
+  }
+  return null;
+}
+
+function applyDeloadWeek() {
+  const day=DAYS[state.dayIdx];
+  const adjustedWeights={};
+  DAYS.forEach(d=>{
+    d.exercises.filter(e=>!isbw(e.u)).forEach(ex=>{
+      const cur=state.data.weights?.[ex.id]??ex.sw;
+      adjustedWeights[ex.id]=Math.round(cur*0.8/2.5)*2.5;
+    });
+  });
+  const recovery={
+    targetDayId:day.id, gapLabel:'Deload Week', daysMissed:0,
+    deloadLevel:'Planned Deload', targetRpe:5,
+    adjustedWeights,
+    context:'20% weight reduction across all lifts. Same sets and reps — the goal is active recovery, not performance. RPE should stay at 5–6.',
+    sessionNotes:['Same sets/reps, lighter weight','No grinding — stop at first sign of struggle','You\'re priming the next training block'],
+    wasDeload:true
+  };
+  state.recovery=recovery;
+  const nd={...state.data,recovery};
+  saveData(nd); state.data=nd; render();
+}
+
+function submitMissed() {
   const GMAP={d1:1,d2:2,d3:3,w1:7,w2:14,w3:21,m1:30};
   const days=state.missedGap==='custom'?(parseInt(state.missedCustom)||1):GMAP[state.missedGap]||1;
-  const lbl={d1:'1 Day',d2:'2 Days',d3:'3 Days',w1:'1 Week',w2:'2 Weeks',w3:'3 Weeks',m1:'1 Month'}[state.missedGap]||days+' Days';
-  const day=DAYS[state.dayIdx];
-  try {
-    const cw={};
-    day.exercises.filter(e=>!isbw(e.u)).forEach(e=>{cw[e.id]={name:e.name,current:state.data.weights?.[e.id]??e.sw};});
-    const prompt='Recovery trainer. Missed '+days+' days. Session:'+day.title+(state.missedReason?' Reason:'+state.missedReason:'')+'\nWeights:'+JSON.stringify(cw,null,1)+'\nRules:1-3d→5-10% off RPE6-7|1wk→15-20% RPE5-6|2wk→25-30% RPE5|3wk→35-40% RPE4-5|1mo→40-50% RPE4\nJSON only:{"targetDayId":"'+day.id+'","gapLabel":"Missed '+lbl+'","daysMissed":'+days+',"deloadLevel":"string","targetRpe":n,"context":"2-3 sentences","adjustedWeights":{"id":n},"sessionNotes":["max 3"]}';
-    const res=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:MODEL,max_tokens:800,messages:[{role:'user',content:prompt}]})});
-    const txt=((await res.json()).content||[]).find(b=>b.type==='text')?.text||'{}';
-    const parsed=JSON.parse(txt.replace(/```json|```/g,'').trim());
-    const nd={...state.data,missed:[...state.data.missed,{date:todayStr(),gapLabel:'Missed '+lbl,days,reason:state.missedReason,targetDayId:day.id}],recovery:parsed};
-    saveData(nd); state.data=nd; state.recovery=parsed;
-  } catch(e){console.error(e);}
+  const parsed=calcMissedRecovery(days, state.missedReason);
+  const nd={...state.data,missed:[...state.data.missed,{date:todayStr(),gapLabel:parsed.gapLabel,days,reason:state.missedReason,targetDayId:parsed.targetDayId}],recovery:parsed};
+  saveData(nd); state.data=nd; state.recovery=parsed;
   state.missedLoad=false; state.showMissed=false; state.missedGap='d1'; state.missedCustom=''; state.missedReason='';
   render();
 }
@@ -452,7 +527,7 @@ function buildApp() {
   wrap.appendChild(content);
 
   // Footer
-  wrap.appendChild(el('div',{padding:'10px 16px',borderTop:'1px solid #e4e8ef',fontSize:'10px',color:'#94a3b8',textAlign:'center'},'Apex Training · Data saved to this browser'));
+  wrap.appendChild(el('div',{padding:'10px 16px',borderTop:'1px solid #e4e8ef',fontSize:'10px',color:'#94a3b8',textAlign:'center'},'Apex Training · Synced to cloud'));
 
   // Overlays
   if(state.showMissed) wrap.appendChild(buildMissedOverlay());
@@ -473,7 +548,7 @@ function buildToday(content, day, total, prs) {
   DAYS.forEach((d,i)=>{
     const btn=h('button',{className:'day-pill'+(state.dayIdx===i?' active':''),
       style:{'--day-color':d.color,'--day-color-light':d.color+'12'},
-      onClick:()=>{state.dayIdx=i;state.session={};state.exRpe={};state.expandedEx=null;state.aiRec=null;state.showCue=null;state.showWarmup=null;state.sessionStart=null;render();}});
+      onClick:()=>{state.dayIdx=i;state.session={};state.exRpe={};state.expandedEx=null;state.progressRec=null;state.showCue=null;state.showWarmup=null;state.sessionStart=null;render();}});
     btn.appendChild(el('div',{fontSize:'9px',fontWeight:'700',color:state.dayIdx===i?d.color:'#94a3b8'},d.label));
     btn.appendChild(el('div',{fontSize:'8px',color:'#94a3b8',marginTop:'1px'},d.title.split(' ').slice(0,2).join(' ')));
     dayGrid.appendChild(btn);
@@ -521,9 +596,23 @@ function buildToday(content, day, total, prs) {
   // Recovery panel
   if(state.recovery&&state.recovery.targetDayId===day.id) content.appendChild(buildRecoveryPanel());
 
-  // AI panel
-  if(total>=3&&!state.recovery) content.appendChild(buildAIPanel(day));
-  else if(total>0&&total<3) content.appendChild(Object.assign(el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',padding:'9px 12px',marginBottom:'10px',fontSize:'12px',color:'#475569'}),[document.createTextNode('AI coach unlocks after '+(3-total)+' more session'+(3-total!==1?'s':'')+'.')]));;
+  // Deload detection banner
+  if(!state.recovery){
+    const dl=detectDeload();
+    if(dl){
+      const banner=el('div',{background:'#fffbeb',border:'1px solid rgba(217,119,6,0.3)',borderRadius:'10px',padding:'9px 12px',marginBottom:'10px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px'});
+      const left=el('div',{flex:'1'});
+      left.appendChild(el('div',{fontSize:'11px',fontWeight:'700',color:'#d97706',marginBottom:'2px'},'⚠ Deload Week Suggested'));
+      left.appendChild(el('div',{fontSize:'11px',color:'#475569',lineHeight:'1.4'},dl.msg));
+      banner.appendChild(left);
+      banner.appendChild(h('button',{className:'btn',style:{background:'#d97706',border:'none',color:'#fff',padding:'7px 10px',fontSize:'11px',fontWeight:'600',borderRadius:'7px',whiteSpace:'nowrap'},onClick:applyDeloadWeek},'Apply'));
+      content.appendChild(banner);
+    }
+  }
+
+  // Progression panel
+  if(total>=2&&!state.recovery) content.appendChild(buildProgressionPanel(day));
+  else if(total===1) content.appendChild(Object.assign(el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',padding:'9px 12px',marginBottom:'10px',fontSize:'12px',color:'#475569'}),[document.createTextNode('Log 1 more '+day.label+' session to unlock progression targets.')]));
 
   // Timer
   content.appendChild(buildTimer());
@@ -761,7 +850,7 @@ function buildTimer() {
   top.appendChild(lbl);
   wrap.appendChild(top);
   const bar=el('div',{className:'timer-bar'});
-  const pct=state.timerSecs!=null?Math.max(0,(state.timerSecs/60)*100):0;
+  const pct=state.timerRunning&&state.timerEnd?Math.max(0,(Math.ceil((state.timerEnd-Date.now())/1000)/state.timerDuration)*100):0;
   const fill=el('div',{id:'timer-fill',className:'timer-fill',width:pct+'%',background:state.timerRunning?(state.timerSecs<=10?'#dc2626':'#2563eb'):'#e4e8ef'});
   bar.appendChild(fill);
   wrap.appendChild(bar);
@@ -772,39 +861,40 @@ function buildTimer() {
   return wrap;
 }
 
-function buildAIPanel(day) {
+function buildProgressionPanel(day) {
+  const rec=state.progressRec||calcProgressionRec(state.data, day);
   const wrap=el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',marginBottom:'10px',overflow:'hidden'});
   const hdr=el('div',{padding:'9px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',background:'rgba(37,99,235,0.04)',borderBottom:'1px solid #e4e8ef'});
-  hdr.appendChild(el('div',{fontSize:'11px',fontWeight:'600',color:'#2563eb',textTransform:'uppercase',letterSpacing:'0.06em'},'AI Coach'));
-  if(!state.aiRec&&!state.aiLoad){hdr.appendChild(h('button',{className:'btn',style:{fontSize:'12px',color:'#2563eb',fontWeight:'600',background:'none',border:'none'},onClick:()=>fetchAI(state.data)},'Generate →'));}
-  wrap.appendChild(hdr);
-  if(state.aiLoad){wrap.appendChild(el('div',{padding:'10px 12px',fontSize:'12px',color:'#475569'},'Analyzing…'));}
-  if(state.aiRec&&!state.aiLoad){
-    const body=el('div',{padding:'10px 12px'});
-    const pills=el('div',{display:'flex',gap:'7px',marginBottom:'8px',alignItems:'center',flexWrap:'wrap'});
-    const trend=state.aiRec.trend||'';
-    const tc=trend==='improving'?'#059669':trend==='overreaching'?'#dc2626':'#d97706';
-    const tb=trend==='improving'?'#f0fdf4':trend==='overreaching'?'#fef2f2':'#fffbeb';
-    pills.appendChild(el('span',{fontSize:'11px',padding:'2px 8px',background:tb,border:'1px solid '+tc+'44',color:tc,borderRadius:'12px',fontWeight:'600'},trend.toUpperCase()));
-    pills.appendChild(el('span',{fontSize:'12px',color:'#475569'},'Target RPE '+el('span',{color:rpeColor(state.aiRec.targetRpe||7),fontWeight:'700'})));
-    pills.lastChild.innerHTML='Target RPE <span style="color:'+rpeColor(state.aiRec.targetRpe||7)+';font-weight:700">'+state.aiRec.targetRpe+'</span>';
-    body.appendChild(pills);
-    if(state.aiRec.focus) body.appendChild(el('div',{fontSize:'12px',color:'#475569',marginBottom:'7px',lineHeight:'1.55'},'→ '+state.aiRec.focus));
-    (state.aiRec.flags||[]).forEach(f=>body.appendChild(el('div',{fontSize:'11px',color:'#d97706',marginBottom:'2px'},'⚠ '+f)));
-    if(state.aiRec.nextWeights&&Object.keys(state.aiRec.nextWeights).length){
-      const wbox=el('div',{marginTop:'8px',borderTop:'1px solid #e4e8ef',paddingTop:'8px'});
-      wbox.appendChild(el('div',{fontSize:'10px',fontWeight:'600',color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'5px'},'Suggested weights'));
-      ALL_EX.filter(e=>state.aiRec.nextWeights[e.id]!=null).forEach(ex=>{
-        const w=state.aiRec.nextWeights[ex.id], cur=state.data.weights?.[ex.id]??ex.sw, diff=w-cur;
-        const row=el('div',{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #e4e8ef'});
-        row.appendChild(el('span',{fontSize:'12px',color:'#475569'},ex.name));
-        row.appendChild(el('span',{fontSize:'12px',color:diff>0?'#059669':diff<0?'#dc2626':'#475569',fontWeight:'600'},w+' lb'+(diff!==0?' ('+(diff>0?'+':'')+diff+')':'')));
-        wbox.appendChild(row);
-      });
-      body.appendChild(wbox);
-    }
-    wrap.appendChild(body);
+  hdr.appendChild(el('div',{fontSize:'11px',fontWeight:'600',color:'#2563eb',textTransform:'uppercase',letterSpacing:'0.06em'},'Progression Coach'));
+  if(rec){
+    const tc=rec.trend==='improving'?'#059669':rec.trend==='overreaching'?'#dc2626':'#d97706';
+    const tb=rec.trend==='improving'?'#f0fdf4':rec.trend==='overreaching'?'#fef2f2':'#fffbeb';
+    hdr.appendChild(el('span',{fontSize:'10px',fontWeight:'600',padding:'2px 7px',background:tb,color:tc,borderRadius:'8px'},rec.trend.toUpperCase()));
   }
+  wrap.appendChild(hdr);
+  if(!rec||!rec.results.length){
+    wrap.appendChild(el('div',{padding:'10px 12px',fontSize:'12px',color:'#94a3b8'},'Log a session for '+day.title+' to see progression targets.'));
+    return wrap;
+  }
+  const body=el('div',{padding:'8px 12px'});
+  // RPE trend line
+  const trendRow=el('div',{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px',padding:'5px 0',borderBottom:'1px solid #e4e8ef'});
+  trendRow.appendChild(el('div',{fontSize:'11px',color:'#475569'},'Avg RPE (recent)'));
+  const rpeVal=parseFloat(rec.avgRpe);
+  trendRow.appendChild(el('div',{fontSize:'13px',fontWeight:'700',color:rpeColor(rpeVal)},rec.avgRpe));
+  body.appendChild(trendRow);
+  rec.results.forEach(r=>{
+    const row=el('div',{display:'flex',justifyContent:'space-between',alignItems:'flex-start',padding:'6px 0',borderBottom:'1px solid #f1f5f9',gap:'8px'});
+    const left=el('div',{flex:'1',minWidth:'0'});
+    left.appendChild(el('div',{fontSize:'12px',color:'#0f172a',fontWeight:'500'},r.ex.name));
+    left.appendChild(el('div',{fontSize:'10px',color:'#94a3b8',marginTop:'1px'},'Current: '+r.curW+' lb'));
+    row.appendChild(left);
+    const badge=el('div',{fontSize:'11px',fontWeight:'600',color:r.color,background:r.color+'12',padding:'3px 8px',borderRadius:'6px',textAlign:'right',whiteSpace:'nowrap',flexShrink:'0'});
+    badge.appendChild(document.createTextNode(r.action==='increase'?'↑ '+r.note:r.action==='decrease'?'↓ '+r.note:'→ '+r.note));
+    row.appendChild(badge);
+    body.appendChild(row);
+  });
+  wrap.appendChild(body);
   return wrap;
 }
 
@@ -1342,7 +1432,7 @@ function buildMissedOverlay() {
   const sheet=el('div',{className:'sheet'});
   sheet.appendChild(el('div',{className:'handle'}));
   sheet.appendChild(el('div',{fontSize:'16px',fontWeight:'700',color:'#0f172a',marginBottom:'4px'},'Log Missed Time'));
-  sheet.appendChild(el('div',{fontSize:'12px',color:'#475569',marginBottom:'14px'},'AI will adjust your comeback session.'));
+  sheet.appendChild(el('div',{fontSize:'12px',color:'#475569',marginBottom:'14px'},'Weights will be adjusted automatically based on how long you were out.'));
   sheet.appendChild(el('div',{fontSize:'10px',fontWeight:'600',color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'7px'},'How long were you out?'));
   const GAPS=[{v:'d1',l:'1 Day'},{v:'d2',l:'2 Days'},{v:'d3',l:'3 Days'},{v:'w1',l:'1 Week'},{v:'w2',l:'2 Weeks'},{v:'w3',l:'3 Weeks'},{v:'m1',l:'1 Month'},{v:'custom',l:'Custom…'}];
   const grid=el('div',{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'5px',marginBottom:'12px'});
@@ -1365,7 +1455,7 @@ function buildMissedOverlay() {
   sheet.appendChild(ta);
   const btns=el('div',{display:'flex',gap:'8px'});
   btns.appendChild(h('button',{className:'btn',style:{flex:'1',background:'#f8f9fb',border:'1px solid #e4e8ef',color:'#475569',padding:'12px',fontSize:'13px',fontWeight:'500',borderRadius:'10px'},onClick:()=>{state.showMissed=false;render();}},'Cancel'));
-  const sub=h('button',{className:'btn',style:{flex:'2',background:state.missedLoad?'#cbd5e1':'#2563eb',border:'none',color:'#fff',padding:'12px',fontSize:'13px',fontWeight:'600',borderRadius:'10px',cursor:state.missedLoad?'default':'pointer'},onClick:state.missedLoad?null:submitMissed},state.missedLoad?'Analyzing…':'Generate Recovery Plan →');
+  const sub=h('button',{className:'btn',style:{flex:'2',background:'#2563eb',border:'none',color:'#fff',padding:'12px',fontSize:'13px',fontWeight:'600',borderRadius:'10px',cursor:'pointer'},onClick:submitMissed},'Calculate Recovery Plan →');
   btns.appendChild(sub);
   sheet.appendChild(btns);
   ov.appendChild(sheet);
