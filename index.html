@@ -404,16 +404,25 @@ function calcMissedRecovery(daysOut, reason) {
   else if(daysOut<=14){pct=0.275;targetRpe=5;deloadLevel='Significant';gapLabel='2 Weeks';}
   else if(daysOut<=21){pct=0.375;targetRpe=5;deloadLevel='Full Reset';gapLabel='3 Weeks';}
   else{pct=0.45;targetRpe=4;deloadLevel='Start Fresh';gapLabel='1 Month+';}
+  const overreaching=state.progressRec&&state.progressRec.trend==='overreaching';
+  if(overreaching){targetRpe=Math.min(targetRpe,6);}
   const adjustedWeights={};
   day.exercises.filter(e=>!isbw(e.u)).forEach(ex=>{
     const cur=state.data.weights?.[ex.id]??ex.sw;
-    adjustedWeights[ex.id]=Math.max(Math.round(ex.sw*0.4/2.5)*2.5,Math.round(cur*(1-pct)/2.5)*2.5);
+    // If overreaching, apply progression reduction first, then missed time deload on top
+    let baseW=cur;
+    if(overreaching&&state.progressRec){
+      const pRec=state.progressRec.results.find(r=>r.ex.id===ex.id);
+      if(pRec&&pRec.action==='decrease') baseW=Math.max(ex.sw,cur-5);
+    }
+    adjustedWeights[ex.id]=Math.max(Math.round(ex.sw*0.4/2.5)*2.5,Math.round(baseW*(1-pct)/2.5)*2.5);
   });
   const pctStr=Math.round(pct*100);
+  const overreachNote=overreaching?' Overreaching detected before the break — weights calculated from already-reduced baseline.':'';
   return {
     targetDayId:day.id, gapLabel:'Missed '+gapLabel, daysMissed:daysOut,
-    deloadLevel, targetRpe, adjustedWeights,
-    context:'Missed '+daysOut+' day'+(daysOut!==1?'s':'')+' — coming back with a '+deloadLevel.toLowerCase()+' deload ('+pctStr+'% weight reduction). Target RPE '+targetRpe+'. Focus on form, not numbers.',
+    deloadLevel, targetRpe, adjustedWeights, overreaching,
+    context:'Missed '+daysOut+' day'+(daysOut!==1?'s':'')+' — coming back with a '+deloadLevel.toLowerCase()+' deload ('+pctStr+'% weight reduction). Target RPE '+targetRpe+'.'+overreachNote,
     sessionNotes:['Form over load today','Stop if anything feels off','Full session next time']
   };
 }
@@ -610,8 +619,8 @@ function buildToday(content, day, total, prs) {
     }
   }
 
-  // Progression panel
-  if(total>=2&&!state.recovery) content.appendChild(buildProgressionPanel(day));
+  // Progression panel — always show if enough data, even alongside recovery
+  if(total>=2) content.appendChild(buildProgressionPanel(day));
   else if(total===1) content.appendChild(Object.assign(el('div',{background:'#fff',border:'1px solid #e4e8ef',borderRadius:'10px',padding:'9px 12px',marginBottom:'10px',fontSize:'12px',color:'#475569'}),[document.createTextNode('Log 1 more '+day.label+' session to unlock progression targets.')]));
 
   // Timer
